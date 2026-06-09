@@ -18,7 +18,6 @@ import numpy as np
 try:
     import sounddevice as sd
     import soundfile as sf
-
     _AUDIO_AVAILABLE = True
 except ImportError:  # pragma: no cover - 测试环境可能未装
     sd = None  # type: ignore[assignment]

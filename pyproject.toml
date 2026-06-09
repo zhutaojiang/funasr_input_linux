@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=65", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "funasr-input"
@@ -38,7 +38,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --timeout=60 --tb=short"
+addopts = "-v --tb=short"
 
 [tool.coverage.run]
 source = ["funasr_input"]

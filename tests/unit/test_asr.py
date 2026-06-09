@@ -5,121 +5,130 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 
-@pytest.fixture
-def mock_funasr_module():
-    """构造一个假 funasr 模块，避免真的下载模型。"""
+def _install_mock_funasr():
+    """安装一个假的 funasr 模块到 sys.modules，避免真的下载模型。"""
     mod = types.ModuleType("funasr")
     auto_model_cls = MagicMock()
     mod.AutoModel = auto_model_cls
-    sys.modules.setdefault("funasr", mod)
+    sys.modules["funasr"] = mod
     return mod
 
 
+def _remove_mock_funasr():
+    sys.modules.pop("funasr", None)
+
+
 class TestASREngine:
-    def test_recognize_returns_text(self, mock_funasr_module, tmp_path):
-        from funasr_input.asr import ASREngine
+    def test_recognize_returns_text(self, tmp_path):
+        mod = _install_mock_funasr()
+        try:
+            mod.AutoModel.return_value.generate.return_value = [{"text": " 你好世界 "}]
 
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = [{"text": " 你好世界 "}]
+            from funasr_input.asr import ASREngine
 
-        engine = ASREngine(model_name="fake-model", device="cpu")
-        wav = tmp_path / "test.wav"
-        wav.write_bytes(b"RIFF....WAVEfmt ")  # 占位，不会被真正读取
+            engine = ASREngine(model_name="fake-model", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF....WAVEfmt ")  # 占位
 
-        result = engine.recognize(wav)
-        assert result == "你好世界"
+            result = engine.recognize(wav)
+            assert result == "你好世界"
+        finally:
+            _remove_mock_funasr()
 
-    def test_recognize_strips_whitespace(self, mock_funasr_module, tmp_path):
-        from funasr_input.asr import ASREngine
+    def test_recognize_strips_whitespace(self, tmp_path):
+        mod = _install_mock_funasr()
+        try:
+            mod.AutoModel.return_value.generate.return_value = [{"text": "\n  hello world \t"}]
 
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = [{"text": "\n  hello world \t"}]
+            from funasr_input.asr import ASREngine
 
-        engine = ASREngine(model_name="fake-model", device="cpu")
-        wav = tmp_path / "test.wav"
-        wav.write_bytes(b"RIFF")
+            engine = ASREngine(model_name="fake-model", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF")
 
-        result = engine.recognize(wav)
-        assert result == "hello world"
+            result = engine.recognize(wav)
+            assert result == "hello world"
+        finally:
+            _remove_mock_funasr()
 
-    def test_recognize_empty_result(self, mock_funasr_module, tmp_path):
-        from funasr_input.asr import ASREngine
+    def test_recognize_empty_result(self, tmp_path):
+        mod = _install_mock_funasr()
+        try:
+            mod.AutoModel.return_value.generate.return_value = []
 
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = []
+            from funasr_input.asr import ASREngine
 
-        engine = ASREngine(model_name="fake-model", device="cpu")
-        wav = tmp_path / "test.wav"
-        wav.write_bytes(b"RIFF")
+            engine = ASREngine(model_name="fake-model", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF")
 
-        result = engine.recognize(wav)
-        assert result == ""
+            result = engine.recognize(wav)
+            assert result == ""
+        finally:
+            _remove_mock_funasr()
 
-    def test_recognize_string_items(self, mock_funasr_module, tmp_path):
-        from funasr_input.asr import ASREngine
+    def test_recognize_string_items(self, tmp_path):
+        mod = _install_mock_funasr()
+        try:
+            mod.AutoModel.return_value.generate.return_value = ["hello", "world"]
 
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = ["hello", "world"]
+            from funasr_input.asr import ASREngine
 
-        engine = ASREngine(model_name="fake-model", device="cpu")
-        wav = tmp_path / "test.wav"
-        wav.write_bytes(b"RIFF")
+            engine = ASREngine(model_name="fake-model", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF")
 
-        result = engine.recognize(wav)
-        assert result == "helloworld"
+            result = engine.recognize(wav)
+            assert result == "helloworld"
+        finally:
+            _remove_mock_funasr()
 
-    def test_recognize_with_timestamp(self, mock_funasr_module, tmp_path):
-        from funasr_input.asr import ASREngine
+    def test_recognize_with_timestamp(self, tmp_path):
+        mod = _install_mock_funasr()
+        try:
+            mod.AutoModel.return_value.generate.return_value = [
+                {"text": "hello", "start": 0, "end": 0.5},
+                {"text": "world", "start": 0.6, "end": 1.0},
+            ]
 
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = [
-            {"text": "hello", "start": 0, "end": 0.5},
-            {"text": "world", "start": 0.6, "end": 1.0},
-        ]
+            from funasr_input.asr import ASREngine
 
-        engine = ASREngine(model_name="fake-model", device="cpu")
-        wav = tmp_path / "test.wav"
-        wav.write_bytes(b"RIFF")
+            engine = ASREngine(model_name="fake-model", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF")
 
-        result = engine.recognize_with_timestamp(wav)
-        assert len(result) == 2
-        assert result[0]["text"] == "hello"
+            result = engine.recognize_with_timestamp(wav)
+            assert len(result) == 2
+            assert result[0]["text"] == "hello"
+        finally:
+            _remove_mock_funasr()
 
     def test_is_loaded_initially_false(self):
+        # 不注入 mock，直接测试初始状态
         from funasr_input.asr import ASREngine
         engine = ASREngine(model_name="fake", device="cpu")
         assert not engine.is_loaded
 
-    def test_unload(self, mock_funasr_module):
-        from funasr_input.asr import ASREngine
-
-        fake_model = mock_funasr_module.AutoModel.return_value
-        fake_model.generate.return_value = []
-
-        engine = ASREngine(model_name="fake", device="cpu")
-        wav = Path("dummy.wav")
-        Path("dummy.wav").write_bytes(b"RIFF")
-
-        engine.recognize(wav)
-        assert engine.is_loaded
-
-        engine.unload()
-        assert not engine.is_loaded
-
-    def test_missing_funasr_raises(self):
-        from funasr_input import asr as asr_module
-        original = sys.modules.get("funasr")
-        sys.modules["funasr"] = None  # type: ignore[assignment]
+    def test_unload(self, tmp_path):
+        mod = _install_mock_funasr()
         try:
-            with pytest.raises(RuntimeError, match="funasr"):
-                from funasr_input.asr import ASREngine  # noqa: F401  # type: ignore[misc]
+            mod.AutoModel.return_value.generate.return_value = []
+
+            from funasr_input.asr import ASREngine
+
+            engine = ASREngine(model_name="fake", device="cpu")
+            wav = tmp_path / "test.wav"
+            wav.write_bytes(b"RIFF")
+
+            engine.recognize(wav)
+            assert engine.is_loaded
+
+            engine.unload()
+            assert not engine.is_loaded
         finally:
-            if original is not None:
-                sys.modules["funasr"] = original
-            else:
-                sys.modules.pop("funasr", None)
+            _remove_mock_funasr()

@@ -2,22 +2,45 @@
 
 from __future__ import annotations
 
-import io
-import os
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 
-# ---- 测试用 AudioConfig ----
+@pytest.fixture
+def mock_soundfile():
+    """让 soundfile 可用，但不需要真正的 libsndfile。"""
+    fake_sf = types.ModuleType("soundfile")
+
+    def fake_write(path, data, samplerate):
+        # 使用 wave 库写出一个最小 WAV 文件
+        import wave
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(1 if len(data.shape) == 1 else data.shape[1])
+            wf.setsampwidth(2)
+            wf.setframerate(int(samplerate))
+            int16 = (data * 32767).astype("<i2")
+            wf.writeframes(int16.tobytes())
+
+    fake_sf.write = fake_write
+    sys.modules["soundfile"] = fake_sf
+    return fake_sf
+
 
 @pytest.fixture
-def config():
-    from funasr_input.audio import AudioConfig
-    return AudioConfig(sample_rate=16000, channels=1)
+def mock_sounddevice():
+    """Mock sounddevice，避免需要麦克风设备。"""
+    fake_sd = types.ModuleType("sounddevice")
+    fake_stream = MagicMock()
+    fake_stream.__enter__ = MagicMock(return_value=fake_stream)
+    fake_stream.__exit__ = MagicMock(return_value=False)
+    fake_sd.InputStream = MagicMock(return_value=fake_stream)
+    sys.modules["sounddevice"] = fake_sd
+    return fake_sd
 
 
 # ---- AudioSegment 测试 ----
@@ -30,8 +53,12 @@ class TestAudioSegment:
         seg = AudioSegment(samples=samples, sample_rate=sr, channels=1)
         assert abs(seg.duration_sec() - 2.0) < 0.01
 
-    def test_to_wav_roundtrip(self, tmp_path):
-        pytest.importorskip("soundfile")
+    def test_to_wav_roundtrip(self, tmp_path, mock_soundfile, monkeypatch):
+        # 关键：把 funasr_input.audio.sf 也替换成我们的 fake_soundfile，
+        # 避免模块顶层已经缓存了真实的 soundfile 引用。
+        import funasr_input.audio as audio_module
+        monkeypatch.setattr(audio_module, "sf", mock_soundfile)
+
         from funasr_input.audio import AudioSegment
         sr = 16000
         # 440 Hz 正弦波 1 秒
