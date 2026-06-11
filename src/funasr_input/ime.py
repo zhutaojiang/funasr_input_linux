@@ -22,7 +22,7 @@ from funasr_input.input import FocusGuard, TextInjector
 from funasr_input.config import load_config
 from funasr_input.polish import Polisher, make_polisher_from_config
 from funasr_input.live import LiveTranscriber
-from funasr_input.preview import PreviewWindow
+from funasr_input.preview import PreviewLogHandler, PreviewWindow
 from funasr_input.presets import resolve_preset
 
 
@@ -51,6 +51,7 @@ class _PolishQueue:
         self._cond = threading.Condition(self._lock)
         self._results: dict[int, str] = {}
         self._stop = threading.Event()
+        self._canceled = threading.Event()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="polish-queue"
         )
@@ -58,6 +59,7 @@ class _PolishQueue:
 
     def submit(self, text: str) -> int:
         with self._lock:
+            self._canceled.clear()
             seq = self._seq + 1
             self._seq = seq
             self._results[seq] = text
@@ -68,15 +70,30 @@ class _PolishQueue:
         self._stop.set()
         with self._lock:
             self._cond.notify_all()
-        self._thread.join(timeout=5.0)
+        self._thread.join(timeout=1.0)
+
+    def cancel(self) -> None:
+        """丢弃所有待处理结果，跳过已排队的 seq。"""
+        with self._lock:
+            self._results.clear()
+            self._next = self._seq + 1
+            self._canceled.set()
+            self._cond.notify_all()
 
     def _run(self) -> None:
         while not self._stop.is_set():
             with self._lock:
-                while self._next not in self._results and not self._stop.is_set():
+                while (
+                    self._next not in self._results
+                    and not self._stop.is_set()
+                    and not self._canceled.is_set()
+                ):
                     self._cond.wait(timeout=0.5)
                 if self._stop.is_set():
                     return
+                if self._canceled.is_set():
+                    self._canceled.clear()
+                    continue
                 seq = self._next
                 text = self._results.pop(seq)
                 self._next = seq + 1
@@ -104,7 +121,7 @@ class VoiceIME:
         model_name: Optional[str] = None,
         vad_model: Optional[str] = None,
         device: str = "cpu",
-        hotkey: str = "win+alt+space",
+        hotkey: str = "win+alt+m",
         quit_hotkey: str = "win+alt+x",
         silence_threshold: float = 0.015,
         silence_duration_sec: float = 1.0,
@@ -157,6 +174,7 @@ class VoiceIME:
         self._quit_hotkey = quit_hotkey
         self._on_status = on_status
         self._busy = threading.Lock()
+        self._cancel = threading.Event()
         self._running = False
         self._live_preview = live_preview
         self._live_interval = live_interval
@@ -174,44 +192,59 @@ class VoiceIME:
         )
 
     def start(self) -> None:
-        """启动热键监听。"""
+        """启动：立即显示悬浮窗+注册热键，后台加载模型。"""
         try:
             import keyboard
         except ImportError as exc:
             raise RuntimeError("请先安装 keyboard: pip install keyboard") from exc
 
         self._running = True
-
-        # 预加载模型：避免录音过程中首次加载抢占 CPU、饿死麦克风采集。
-        logger.info("预加载识别模型...")
-        self._notify("⏳ 正在加载识别模型（首次较慢，请稍候）...")
-        try:
-            self._asr.load()
-        except Exception as exc:
-            logger.exception("模型预加载失败")
-            self._notify(f"❌ 模型加载失败: {exc}")
-            return
-        logger.info("模型就绪")
-
-        self._register_hotkeys(keyboard)
-        # 看门狗：定时重装键盘钩子，让休眠/唤醒后失效的全局钩子自愈。
-        self._start_hotkey_watchdog(keyboard)
+        log_handler: Optional[PreviewLogHandler] = None
 
         if self._live_preview:
             self._preview = PreviewWindow(
-                idle_text=f"🎙️ 待命 · {self._hotkey} 说话 · {self._quit_hotkey} 退出"
+                idle_text=f"🎙️ 待命 · {self._hotkey} 说话 · 再按中止 · {self._quit_hotkey} 退出"
             )
+            log_handler = PreviewLogHandler(self._preview)
+            log_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
+            )
+            logger.addHandler(log_handler)
+
+        logger.info("正在初始化...")
+
+        self._register_hotkeys(keyboard)
+        self._start_hotkey_watchdog(keyboard)
+        logger.info("热键已注册: %s / %s", self._hotkey, self._quit_hotkey)
+
+        def _load_model() -> None:
+            logger.info("预加载识别模型...")
+            try:
+                self._asr.load()
+            except Exception as exc:
+                logger.exception("模型预加载失败")
+                self._notify(f"❌ 模型加载失败: {exc}")
+                return
+            logger.info("模型就绪")
+            if self._preview is not None:
+                self._preview.exit_boot()
             logger.info(
                 "语音输入法已启动，快捷键: %s，退出: %s",
                 self._hotkey,
                 self._quit_hotkey,
             )
+            if log_handler:
+                logger.removeHandler(log_handler)
+
+        if self._live_preview:
+            threading.Thread(target=_load_model, daemon=True, name="model-load").start()
             try:
                 self._preview.run()
             except KeyboardInterrupt:
                 pass
             self.stop()
         else:
+            _load_model()
             self._notify(
                 f"语音输入法已启动，快捷键: {self._hotkey}，退出: {self._quit_hotkey}"
             )
@@ -249,7 +282,8 @@ class VoiceIME:
         logger.info("收到退出热键")
         self._quit_event.set()
         if self._preview is not None:
-            self._preview.close()
+            self._preview.show("👋 正在退出...")
+            self._preview.close(delay_sec=0.8)
 
     def stop(self) -> None:
         """停止。"""
@@ -265,10 +299,16 @@ class VoiceIME:
 
     def _on_hotkey(self) -> None:
         """热键回调：把流水线丢到工作线程跑，避免阻塞 keyboard 监听线程
-        （否则录音/识别期间 ESC 等热键无法响应）。"""
+        （否则录音/识别期间 ESC 等热键无法响应）。
+        流水线进行中再按一次则中止。"""
         if self._busy.locked():
-            self._notify("⚠ 正在录音/识别中，请稍候...")
+            logger.info("中止当前流水线")
+            self._cancel.set()
+            self._recorder.abort()
+            self._polish_queue.cancel()
+            self._set_record(None)
             return
+        self._cancel.clear()
         threading.Thread(target=self._run_pipeline, daemon=True).start()
 
     def _run_pipeline(self) -> None:
@@ -279,6 +319,10 @@ class VoiceIME:
             self._set_record("🎤 正在录音...")
             live: Optional[LiveTranscriber] = None
             try:
+                if self._cancel.is_set():
+                    logger.info("pipeline 已中止（录音前）")
+                    self._set_record(None)
+                    return
                 if self._live_preview:
                     live = LiveTranscriber(
                         recognize=self._recognize_samples,
@@ -301,12 +345,21 @@ class VoiceIME:
                 else:
                     segment = self._recorder.record()
             except RuntimeError as exc:
+                if self._cancel.is_set():
+                    logger.info("pipeline 已中止（录音中）")
+                    self._set_record(None)
+                    return
                 logger.info("录音失败: %s", exc)
                 self._set_record(f"❌ 录音失败: {exc}")
                 return
             finally:
                 if live is not None:
                     live.stop()
+
+            if self._cancel.is_set():
+                logger.info("pipeline 已中止（录音后）")
+                self._set_record(None)
+                return
 
             logger.info(
                 "录音结束: %d 样本 (%.2fs)",
@@ -322,6 +375,10 @@ class VoiceIME:
                 text = self._asr.recognize(tmp_wav)
                 logger.info("最终识别: %.2fs -> %r", time.time() - t0, text)
             except Exception as exc:
+                if self._cancel.is_set():
+                    logger.info("pipeline 已中止（识别中）")
+                    self._set_record(None)
+                    return
                 logger.exception("最终识别异常")
                 self._set_record(f"❌ 识别失败: {exc}")
                 return
@@ -330,6 +387,11 @@ class VoiceIME:
                     tmp_wav.unlink(missing_ok=True)
                 except Exception:
                     pass
+
+            if self._cancel.is_set():
+                logger.info("pipeline 已中止（识别后）")
+                self._set_record(None)
+                return
 
             if not text:
                 logger.info("未识别到语音")

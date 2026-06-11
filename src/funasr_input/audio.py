@@ -21,9 +21,7 @@ def _load_sounddevice():
     try:
         import sounddevice as sd
     except ImportError as exc:  # pragma: no cover - 取决于运行环境
-        raise RuntimeError(
-            "请先安装 sounddevice: pip install sounddevice"
-        ) from exc
+        raise RuntimeError("请先安装 sounddevice: pip install sounddevice") from exc
     return sd
 
 
@@ -32,9 +30,7 @@ def _load_soundfile():
     try:
         import soundfile as sf
     except ImportError as exc:  # pragma: no cover - 取决于运行环境
-        raise RuntimeError(
-            "请先安装 soundfile: pip install soundfile"
-        ) from exc
+        raise RuntimeError("请先安装 soundfile: pip install soundfile") from exc
     return sf
 
 
@@ -92,6 +88,10 @@ class AudioRecorder:
 
     # ---- 公共接口 ----
 
+    def abort(self) -> None:
+        """中止正在进行的录音。"""
+        self._recording.clear()
+
     def record(
         self,
         *,
@@ -130,7 +130,7 @@ class AudioRecorder:
                     if self._on_chunk:
                         self._on_chunk(chunk)
 
-                    volume = float(np.sqrt(np.mean(chunk ** 2)))
+                    volume = float(np.sqrt(np.mean(chunk**2)))
                     if volume < self._silence_threshold:
                         # 语音尚未开始时，忽略前导静音，避免一上来就停录
                         if not speech_started:

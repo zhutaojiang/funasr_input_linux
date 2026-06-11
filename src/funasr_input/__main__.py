@@ -17,7 +17,7 @@ def main() -> None:
     p.add_argument("--model-name", help="ASR 模型名 (覆盖 preset)")
     p.add_argument("--vad-model", help="VAD 模型名 (覆盖 preset)")
     p.add_argument("--device", default="cpu", help="推理设备 (cpu/cuda)")
-    p.add_argument("--hotkey", default="win+alt+space", help="录音热键")
+    p.add_argument("--hotkey", default="win+alt+m", help="录音热键")
     p.add_argument("--quit-hotkey", default="win+alt+x", help="退出热键")
     p.add_argument("--silence-threshold", type=float, default=0.015, help="静音阈值")
     p.add_argument(
