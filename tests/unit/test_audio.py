@@ -53,12 +53,9 @@ class TestAudioSegment:
         seg = AudioSegment(samples=samples, sample_rate=sr, channels=1)
         assert abs(seg.duration_sec() - 2.0) < 0.01
 
-    def test_to_wav_roundtrip(self, tmp_path, mock_soundfile, monkeypatch):
-        # 关键：把 funasr_input.audio.sf 也替换成我们的 fake_soundfile，
-        # 避免模块顶层已经缓存了真实的 soundfile 引用。
-        import funasr_input.audio as audio_module
-        monkeypatch.setattr(audio_module, "sf", mock_soundfile)
-
+    def test_to_wav_roundtrip(self, tmp_path, mock_soundfile):
+        # mock_soundfile 已把假的 soundfile 注入 sys.modules，
+        # AudioSegment.to_wav 惰性导入时会拿到它。
         from funasr_input.audio import AudioSegment
         sr = 16000
         # 440 Hz 正弦波 1 秒

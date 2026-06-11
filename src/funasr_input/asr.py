@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
-import tempfile
+import logging
+import threading
+import time
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
+
+logger = logging.getLogger("funasr_input")
 
 
 class ASREngine:
@@ -33,6 +37,14 @@ class ASREngine:
         self._punc_model = punc_model
         self._spk_model = spk_model
         self._model = None  # lazy load
+        # 串行化对单个 FunASR 模型的访问：准流式下工作线程与主线程会同时
+        # recognize，并发 generate 会死锁。
+        self._lock = threading.Lock()
+
+    def load(self) -> None:
+        """预加载模型（线程安全）。在录音前调用，避免录音中加载抢占 CPU。"""
+        with self._lock:
+            self._load()
 
     def _load(self) -> None:
         if self._model is not None:
@@ -49,17 +61,24 @@ class ASREngine:
             "vad_model": self._vad_model,
             "punc_model": self._punc_model,
             "device": self._device,
+            # 跳过 funasr 每次启动联网查新版（funasr 日志自己也建议这么做），
+            # 省掉一次网络等待。
+            "disable_update": True,
         }
         if self._spk_model:
             kwargs["spk_model"] = self._spk_model
 
+        logger.info("开始加载 FunASR 模型 %s ...", self._model_name)
+        t0 = time.time()
         self._model = AutoModel(**kwargs)
+        logger.info("FunASR 模型加载完成: %.1fs", time.time() - t0)
 
     def recognize(self, wav_path: Union[str, Path]) -> str:
         """识别一段 WAV，返回纯文本。"""
-        self._load()
         path = str(wav_path)
-        result = self._model.generate(input=path)
+        with self._lock:
+            self._load()
+            result = self._model.generate(input=path)
 
         if not result or not isinstance(result, list):
             return ""
@@ -76,9 +95,10 @@ class ASREngine:
 
     def recognize_with_timestamp(self, wav_path: Union[str, Path]) -> list[dict]:
         """返回带时间戳的结构化结果（如果模型支持）。"""
-        self._load()
         path = str(wav_path)
-        result = self._model.generate(input=path)
+        with self._lock:
+            self._load()
+            result = self._model.generate(input=path)
 
         if not result or not isinstance(result, list):
             return []

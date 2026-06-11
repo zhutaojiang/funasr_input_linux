@@ -1,0 +1,29 @@
+# funasr_input 配置示例。
+# 复制为 config.toml 并填入你的值（config.toml 已被 .gitignore 忽略，不会提交）。
+
+[asr]
+# 识别模型预设（后续会有配置对话框可视化切换）：
+#   "nano" — Fun-ASR-Nano，多语言 50+、中英混说强、质量高；
+#            自回归逐字生成，CPU 上慢、内存大（2GB+）。
+#   "fast" — Paraformer（中文为主），非自回归一次出整句，
+#            CPU 上通常快数倍、内存更省；多语言能力弱。
+# 主要说中文 + CPU 机器，建议 "fast"（标点/错别字由下面的 LLM 润色补齐）。
+preset = "nano"
+
+[polish]
+# StepFun（阶跃星辰）OpenAI 兼容接口
+api_key  = "在这里填你的 StepFun API key"
+base_url = "https://api.stepfun.com/v1"
+model    = "step-1-flash"
+# 可选：自定义润色 prompt（不填则用内置默认：去语气词、调语序、错别字/标点、
+# 组合键「加」转「+」等）。想改润色风格在这里覆盖即可。
+# prompt = "你是语音输入的文本润色器……"
+
+# 以下为运行选项，后续会接入配置对话框做动态调整；当前先在启动代码里传参，
+# 这里仅作记录/占位（暂未被读取）。
+# [ime]
+# hotkey        = "win+alt+space"
+# device        = "cpu"          # cpu | cuda（需自行装 CUDA 版 torch）
+# live_preview  = true           # 准流式悬浮预览
+# live_interval = 2.5            # 预览粗结果刷新间隔（秒）
+# polish        = true           # 注入前 LLM 润色

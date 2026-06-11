@@ -108,6 +108,15 @@ class TestASREngine:
         finally:
             _remove_mock_funasr()
 
+    def test_type_hints_resolve(self):
+        # __init__ 的注解必须能被求值（历史上 spk_model 用了未导入的 Optional）
+        import typing
+
+        from funasr_input.asr import ASREngine
+
+        hints = typing.get_type_hints(ASREngine.__init__)
+        assert "spk_model" in hints
+
     def test_is_loaded_initially_false(self):
         # 不注入 mock，直接测试初始状态
         from funasr_input.asr import ASREngine
@@ -130,5 +139,43 @@ class TestASREngine:
 
             engine.unload()
             assert not engine.is_loaded
+        finally:
+            _remove_mock_funasr()
+
+    def test_recognize_serializes_concurrent_calls(self):
+        # 准流式下 LiveTranscriber 工作线程与主线程会同时 recognize，
+        # 必须串行化对同一 FunASR 模型的访问，否则并发 generate 会死锁。
+        import threading
+        import time
+
+        mod = _install_mock_funasr()
+        try:
+            state = {"cur": 0, "max": 0}
+            slock = threading.Lock()
+
+            def fake_generate(input):
+                with slock:
+                    state["cur"] += 1
+                    state["max"] = max(state["max"], state["cur"])
+                time.sleep(0.03)
+                with slock:
+                    state["cur"] -= 1
+                return [{"text": "x"}]
+
+            mod.AutoModel.return_value.generate.side_effect = fake_generate
+
+            from funasr_input.asr import ASREngine
+
+            engine = ASREngine(model_name="fake", device="cpu")
+            threads = [
+                threading.Thread(target=lambda: engine.recognize("a.wav"))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert state["max"] == 1, f"generate 不应并发执行，峰值={state['max']}"
         finally:
             _remove_mock_funasr()
