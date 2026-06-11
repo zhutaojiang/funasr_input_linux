@@ -1,14 +1,31 @@
 # funasr_input
 
-基于 FunASR 的 Windows 语音输入法。
+基于 FunASR 的 Windows 语音输入法——按热键说话，自动语音识别，文本注入当前焦点窗口。支持 LLM 润色和准流式预览。
 
 ## 功能
 
-- 热键触发录音（默认 Win+Alt+Space）
-- 自动静音检测停止
-- FunASR 本地识别，支持 50+ 语言
-- SendInput 逐字注入当前焦点窗口
-- 兼容 Claude Code CLI / Codex CLI / 终端 / GUI 程序
+- 热键触发录音（默认 `Win+Alt+M`），静音自动停止
+- FunASR 本地识别，支持 50+ 语言（nano 预设）或中文快速识别（fast 预设）
+- 准流式悬浮预览：说话时实时显示粗识别结果
+- LLM 润色：识别后自动修正错别字/标点/语气词，再注入
+- SendInput 逐字注入当前焦点窗口，兼容任意应用
+- 热键看门狗：休眠唤醒后自动恢复钩子
+
+## 数据流
+
+```
+热键按下 (Win+Alt+M)
+  └─ 保存/恢复焦点窗口
+       └─ 录音开始 (sounddevice)
+            ├─ [快层] 每 ~2.5s 取累积音频 → 粗识别 → 悬浮窗"识别中: …"
+            └─ 静音 1s → 停止录音
+                 └─ 完整识别 (FunASR)
+                      └─ 提交保序润色队列
+                           └─ [可选] LLM 润色
+                                └─ SendInput 逐字注入焦点窗口
+```
+
+**只注入一次净本**，不做"退格改字"，彻底回避 CLI/多行场景下的错位风险。润色失败自动回退原文。
 
 ## 安装
 
@@ -20,13 +37,13 @@ py -3.12 -m venv .venv
 pip install -e ".[dev]"
 ```
 
-> 若 `py -3.12` 报 “No runtime installed that matches 3.12”（例如 3.12 是 uv 装的、
+> 若 `py -3.12` 报 "No runtime installed that matches 3.12"（例如 3.12 是 uv 装的、
 > 没注册到 py 启动器），可改用 uv 建环境：`uv venv --python 3.12`；或直接用 3.12
 > 解释器全路径建：`& "<python3.12.exe>" -m venv .venv`（后者带 pip，后续步骤不变）。
 
 > 默认安装的是 **CPU 版 torch**。若有 NVIDIA 显卡想用 GPU 加速，请按
 > [pytorch.org](https://pytorch.org) 的指引单独安装对应 CUDA 版本的 torch/torchaudio，
-> 并把 `VoiceIME(device="cuda")`。
+> 启动时加 `--device cuda`。
 >
 > 国内网络下载较慢可加镜像：`pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple`
 
@@ -67,87 +84,127 @@ pip install -e ".[dev]"
 
 ## 使用
 
+### 快速启动
+
 ```bash
 python -m funasr_input
 ```
 
-按 `Win+Alt+Space` 开始录音，静音 1 秒自动识别并输入，按 `Win+Alt+X` 退出。
-首次运行会联网下载 FunASR 模型，请耐心等待。
+或使用启动脚本（自动激活 `.venv`）：
+
+```powershell
+.\start.ps1
+```
+
+默认行为：按 `Win+Alt+M` 开始录音，静音 1 秒自动识别，**润色和准流式预览默认开启**（需配置 API key），按 `Win+Alt+X` 退出。
 
 > 全局热键依赖 `keyboard` 库，通常需要**以管理员身份运行终端**才能捕获按键。
-> 退出键默认 `Win+Alt+X`（避免裸 ESC 误碰），可用 `VoiceIME(quit_hotkey="…")` 自定义。
 >
 > **睡眠后自愈**：Windows 在休眠/唤醒后常会让全局键盘钩子失效（表现为隔夜放置后
 > 热键全部无响应）。程序内置看门狗每 30 秒重装钩子，唤醒后通常能自动恢复；若仍
 > 无响应，重启程序即可。
 
+### 命令行参数
+
+```
+python -m funasr_input [选项]
+
+选项：
+  --asr-preset {nano,fast}   识别模型预设 (nano=多语言, fast=中文快)
+  --model-name MODEL         ASR 模型名 (覆盖 preset)
+  --vad-model MODEL          VAD 模型名 (覆盖 preset)
+  --device {cpu,cuda}        推理设备 (默认 cpu)
+  --hotkey HOTKEY            录音热键 (默认 win+alt+m)
+  --quit-hotkey HOTKEY       退出热键 (默认 win+alt+x)
+  --silence-threshold FLOAT  静音阈值 (默认 0.015)
+  --silence-duration FLOAT   静音持续秒数后停止录音 (默认 1.0)
+  --max-record-sec FLOAT     最长录音秒数 (默认 30.0)
+  --char-delay FLOAT         逐字注入延迟秒数 (默认 0.0)
+  --no-polish                禁用 LLM 润色
+  --no-live-preview          禁用准流式悬浮预览
+  --live-interval FLOAT      预览刷新间隔秒数 (默认 2.5)
+  --debug                    开启 DEBUG 日志
+```
+
+示例：
+
+```bash
+# 中文快速识别 + 润色 + 预览（推荐日常使用）
+python -m funasr_input --asr-preset fast
+
+# 不需要润色和预览
+python -m funasr_input --no-polish --no-live-preview
+
+# GPU 加速
+python -m funasr_input --device cuda
+
+# 自定义热键
+python -m funasr_input --hotkey ctrl+alt+r --quit-hotkey ctrl+alt+q
+```
+
 ### 识别模型预设：质量 or 速度
 
-`config.toml` 的 `[asr].preset` 二选一：
+`config.toml` 的 `[asr].preset` 或 `--asr-preset` 参数二选一：
 
 | preset | 模型 | 特点 |
 |---|---|---|
 | `nano`（默认） | Fun-ASR-Nano | 多语言 50+、中英混说强、质量高；自回归逐字生成，**CPU 慢、内存大**。 |
 | `fast` | Paraformer（中文） | 非自回归一次出整句，**CPU 上快数倍、内存省**；多语言弱。 |
 
-```toml
-[asr]
-preset = "fast"
-```
-
 经验：**主要说中文 + CPU 机器，选 `fast`** —— 实测识别比 `nano` 快约 4~7 倍，标点/错别字交给 LLM 润色补齐即可。需要多语言/最高质量再用 `nano`。
-也可在代码里临时覆盖：`VoiceIME(asr_preset="fast", ...)` 或 `VoiceIME(model_name="paraformer-zh", ...)`。
 
-### 可选：LLM 润色
+### LLM 润色
 
-开启后，识别结果会先用 LLM 修正错别字/标点，再写入输入框。默认走 StepFun
-（阶跃星辰，国内直连并自动绕过系统代理）。
+识别结果会先用 LLM 修正错别字/标点/语气词，再写入输入框。默认走 StepFun
+（阶跃星辰，国内直连并自动绕过系统代理），也支持任何 OpenAI 兼容接口（如 DeepSeek）。
 
-**配置（推荐）：** 复制 `config.example.toml` 为项目根的 `config.toml`，填入你的值
+**配置：** 复制 `config.example.toml` 为项目根的 `config.toml`，填入你的值
 （`config.toml` 已被 `.gitignore` 忽略，可安全存放 key）：
 
 ```toml
 [polish]
-api_key  = "你的 StepFun API key"
+api_key  = "你的 API key"
 base_url = "https://api.stepfun.com/v1"
 model    = "step-1-flash"
-```
-
-然后以 `polish=True` 启动：
-
-```bash
-python -c "from funasr_input.ime import VoiceIME; VoiceIME(device='cpu', polish=True).start()"
 ```
 
 说明：
 - `api_key` 也可改用环境变量 `STEPFUN_API_KEY`；`base_url`/`model` 缺省时回退到内置默认值。
 - 配置路径可用环境变量 `FUNASR_INPUT_CONFIG` 覆盖。
-- 也可传入自定义 `polisher=`（任何实现 `polish(text)->str` 的对象）。
 - 任何网络/接口失败都会**自动回退到原始识别文本**，不会卡住输入。
+- 未配置 API key 时润色自动跳过，不影响使用。
 
-### 可选：准流式预览
+### 准流式预览
 
-开启后，说话时会在屏幕下方弹出置顶悬浮窗，实时显示「识别中: …」粗结果；
-说完（静音停止）后完整识别（如开了润色再润色），把净本一次性敲进焦点窗口。
+说话时在屏幕下方弹出置顶悬浮窗，实时显示「识别中: …」粗结果；
+说完后完整识别（如开了润色再润色），把净本一次性敲进焦点窗口。
 
-```bash
-python -c "from funasr_input.ime import VoiceIME; VoiceIME(device='cpu', live_preview=True, polish=True).start()"
+- 使用 tkinter 实现，无额外依赖
+- 置顶无边框半透明，可拖拽，自动定位屏幕底部居中
+- `--live-interval`（默认 2.5 秒）控制粗结果刷新间隔；CPU 较慢可调大
+- 用 `--no-live-preview` 关闭
+
+## 项目结构
+
 ```
-
-- `live_interval`（默认 2.5 秒）控制粗结果刷新间隔；CPU 较慢可调大。
-- 悬浮窗用 tkinter（无新依赖），置顶无边框，按 `Win+Alt+X` 退出。
+src/funasr_input/
+├── __main__.py   # CLI 入口
+├── ime.py        # 核心编排器 (VoiceIME, _PolishQueue)
+├── asr.py        # ASR 语音识别引擎
+├── audio.py      # 音频采集 (AudioRecorder, AudioSegment)
+├── input.py      # Windows 文本注入 (TextInjector, FocusGuard)
+├── polish.py     # LLM 润色 (StepFunPolisher)
+├── live.py       # 准流式识别调度 (LiveTranscriber)
+├── preview.py    # 悬浮预览窗 (PreviewWindow)
+├── presets.py    # 识别模型预设
+└── config.py     # TOML 配置加载
+```
 
 ## 开发
 
 ```bash
-# 安装依赖
 pip install -e ".[dev]"
-
-# 运行测试
 pytest tests/ -v
-
-# 打包
-python -m build
 ```
 
 ## 许可证
