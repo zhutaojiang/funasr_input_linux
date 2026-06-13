@@ -2,6 +2,9 @@
 
 润色与注入异步执行：识别完成后立即释放 _busy 锁，允许新一轮录音；
 润色+注入由 _PolishQueue 保序后台执行。
+
+Linux 热键说明：keyboard 库在 Linux 下读取 /dev/input 设备，需要 root 权限
+或将当前用户加入 input 组（sudo usermod -aG input $USER，重新登录后生效）。
 """
 
 from __future__ import annotations
@@ -121,8 +124,8 @@ class VoiceIME:
         model_name: Optional[str] = None,
         vad_model: Optional[str] = None,
         device: str = "cpu",
-        hotkey: str = "win+alt+m",
-        quit_hotkey: str = "win+alt+x",
+        hotkey: str = "ctrl+alt+r",
+        quit_hotkey: str = "ctrl+alt+q",
         silence_threshold: float = 0.015,
         silence_duration_sec: float = 1.0,
         max_record_sec: float = 30.0,
@@ -196,7 +199,11 @@ class VoiceIME:
         try:
             import keyboard
         except ImportError as exc:
-            raise RuntimeError("请先安装 keyboard: pip install keyboard") from exc
+            raise RuntimeError(
+            "请先安装 keyboard: pip install keyboard\n"
+            "Linux 下还需要 root 权限或将用户加入 input 组：\n"
+            "  sudo usermod -aG input $USER  （重新登录后生效）"
+        ) from exc
 
         self._running = True
         log_handler: Optional[PreviewLogHandler] = None
@@ -214,7 +221,6 @@ class VoiceIME:
         logger.info("正在初始化...")
 
         self._register_hotkeys(keyboard)
-        self._start_hotkey_watchdog(keyboard)
         logger.info("热键已注册: %s / %s", self._hotkey, self._quit_hotkey)
 
         def _load_model() -> None:
@@ -236,12 +242,13 @@ class VoiceIME:
             if log_handler:
                 logger.removeHandler(log_handler)
 
+        # Ctrl+C 退出：tkinter mainloop 是 C 层循环，KeyboardInterrupt 插不进去，
+        # 需要显式注册 SIGINT handler 通过 after() 调度 quit。
+        signal.signal(signal.SIGINT, lambda s, f: self._on_quit())
+
         if self._live_preview:
             threading.Thread(target=_load_model, daemon=True, name="model-load").start()
-            try:
-                self._preview.run()
-            except KeyboardInterrupt:
-                pass
+            self._preview.run()
             self.stop()
         else:
             _load_model()
@@ -256,27 +263,16 @@ class VoiceIME:
 
     def _register_hotkeys(self, keyboard) -> None:  # type: ignore[no-untyped-def]
         """注册录音热键与退出热键。"""
-        keyboard.add_hotkey(self._hotkey, self._on_hotkey)
-        keyboard.add_hotkey(self._quit_hotkey, self._on_quit)
-
-    def _start_hotkey_watchdog(self, keyboard, interval: float = 30.0) -> None:  # type: ignore[no-untyped-def]
-        """后台线程定时重装全局键盘钩子。
-
-        Windows 在睡眠/唤醒后常会把 keyboard 库的低级钩子移除，导致热键
-        （含退出键）全部失效、进程看似挂死。这里每 interval 秒 unhook_all
-        后重新注册，强制重建钩子，唤醒后可自愈。
-        """
-
-        def _loop() -> None:
-            while not self._hk_stop.wait(interval):
-                try:
-                    keyboard.unhook_all()
-                    self._register_hotkeys(keyboard)
-                    logger.debug("热键看门狗：已重装钩子")
-                except Exception:
-                    logger.exception("热键看门狗重装失败")
-
-        threading.Thread(target=_loop, name="hotkey-watchdog", daemon=True).start()
+        try:
+            keyboard.add_hotkey(self._hotkey, self._on_hotkey)
+            keyboard.add_hotkey(self._quit_hotkey, self._on_quit)
+        except Exception as exc:
+            raise RuntimeError(
+                f"热键注册失败：{exc}\n"
+                "Linux 下需要 root 权限或加入 input 组：\n"
+                "  sudo usermod -aG input $USER  （重新登录后生效）\n"
+                "或直接以 sudo 运行。"
+            ) from exc
 
     def _on_quit(self) -> None:
         logger.info("收到退出热键")

@@ -44,7 +44,7 @@ class PreviewWindow:
             textvariable=self._var,
             fg="#eeeeee",
             bg="#222222",
-            font=("Microsoft YaHei", 12),
+            font=("Noto Sans CJK SC", 12),
             padx=16,
             pady=8,
             justify="left",
@@ -115,7 +115,7 @@ class PreviewWindow:
             self._log_lines.clear()
         self._cancel_revert()
         self._var.set(self._idle_text)
-        self._label.configure(font=("Microsoft YaHei", 14))
+        self._label.configure(font=("Noto Sans CJK SC", 14))
         self._position_bottom_center()
 
     def show(self, text: str) -> None:

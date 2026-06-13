@@ -65,7 +65,11 @@ class AudioSegment:
 
 
 class AudioRecorder:
-    """基于 sounddevice 的实时录音器。"""
+    """基于 sounddevice 的实时录音器。
+
+    自动适配设备原生采样率：若设备不支持 config.sample_rate（ASR 目标率），
+    则以设备默认率录音，录完后线性插值重采样到目标率，无需额外依赖。
+    """
 
     def __init__(
         self,
@@ -77,14 +81,41 @@ class AudioRecorder:
         on_chunk: Optional[Callable[[np.ndarray], None]] = None,
     ) -> None:
         self._config = config
+        self._device_rate = self._query_device_rate(config)
         self._silence_threshold = silence_threshold
-        self._silence_frames = int(silence_duration_sec * config.sample_rate)
-        self._max_frames = int(max_record_sec * config.sample_rate)
+        # 静音/最大帧数按设备实际采样率计算，重采样后再交给 ASR
+        self._silence_frames = int(silence_duration_sec * self._device_rate)
+        self._max_frames = int(max_record_sec * self._device_rate)
         self._on_chunk = on_chunk
 
         self._q: queue.Queue[np.ndarray] = queue.Queue()
         self._recording = threading.Event()
         self._stream = None  # type: Optional[object]  # sd.InputStream
+
+    @staticmethod
+    def _query_device_rate(config: AudioConfig) -> int:
+        """查询设备默认采样率；查不到则回退到 config.sample_rate。"""
+        try:
+            sd = _load_sounddevice()
+            info = sd.query_devices(config.device, "input")
+            return int(info["default_samplerate"])
+        except Exception:
+            return config.sample_rate
+
+    @staticmethod
+    def _resample(data: np.ndarray, orig_rate: int, target_rate: int) -> np.ndarray:
+        """线性插值重采样（仅在采样率不同时执行）。支持 (frames,) 和 (frames, ch) 输入。"""
+        # sounddevice 返回 (frames, channels)，interp 只接受 1D
+        squeezed = data.squeeze()
+        if orig_rate == target_rate:
+            return squeezed
+        n_out = int(len(squeezed) * target_rate / orig_rate)
+        resampled = np.interp(
+            np.linspace(0, len(squeezed) - 1, n_out),
+            np.arange(len(squeezed)),
+            squeezed,
+        )
+        return resampled.astype(data.dtype)
 
     # ---- 公共接口 ----
 
@@ -98,19 +129,19 @@ class AudioRecorder:
         on_window: Optional[Callable[[np.ndarray], None]] = None,
         window_interval: float = 2.5,
     ) -> AudioSegment:
-        """同步录音：自动按静音停止，返回 AudioSegment。"""
+        """同步录音：自动按静音停止，返回 AudioSegment（已重采样到目标率）。"""
         self._recording.set()
         buffer: list[np.ndarray] = []
         total_frames = 0
         silence_start: Optional[int] = None
         speech_started = False  # 仅在检测到语音后才用静音判断停止
-        window_frames = int(window_interval * self._config.sample_rate)
+        window_frames = int(window_interval * self._device_rate)
         next_window = window_frames
 
         sd = _load_sounddevice()
         try:
             with sd.InputStream(
-                samplerate=self._config.sample_rate,
+                samplerate=self._device_rate,
                 channels=self._config.channels,
                 dtype=self._config.dtype,
                 device=self._config.device,
@@ -125,7 +156,8 @@ class AudioRecorder:
                     buffer.append(chunk)
                     total_frames += len(chunk)
                     if on_window and window_frames > 0 and total_frames >= next_window:
-                        on_window(np.concatenate(buffer).copy())
+                        raw = np.concatenate(buffer).copy()
+                        on_window(self._resample(raw, self._device_rate, self._config.sample_rate))
                         next_window += window_frames
                     if self._on_chunk:
                         self._on_chunk(chunk)
@@ -149,6 +181,7 @@ class AudioRecorder:
             raise RuntimeError("未录制到有效音频")
 
         samples = np.concatenate(buffer)
+        samples = self._resample(samples, self._device_rate, self._config.sample_rate)
         return AudioSegment(
             samples=samples,
             sample_rate=self._config.sample_rate,
@@ -162,7 +195,7 @@ class AudioRecorder:
         sd = _load_sounddevice()
         self._recording.set()
         self._stream = sd.InputStream(
-            samplerate=self._config.sample_rate,
+            samplerate=self._device_rate,
             channels=self._config.channels,
             dtype=self._config.dtype,
             device=self._config.device,

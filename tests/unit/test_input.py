@@ -1,98 +1,177 @@
-"""输入注入模块单元测试。
+"""输入注入模块单元测试（Linux 实现）。
 
-注入是这个项目的核心功能，过去的实现把 Unicode 码点放进了 keybd_event 的
-dwExtraInfo 参数（而非 wScan），实际上敲不出任何字符。这里的测试直接校验
-SendInput 收到的 INPUT 结构体内容，确保码点落在正确的字段上。
+通过 Mock subprocess.run 验证 xdotool / xclip（X11）
+或 wtype / wl-clipboard（Wayland）调用是否正确。
 """
 
 from __future__ import annotations
 
-import time
-from unittest.mock import MagicMock
+import os
+from unittest.mock import MagicMock, call, patch
 
-from funasr_input.input import (
-    TextInjector,
-    INPUT_KEYBOARD,
-    KEYEVENTF_UNICODE,
-    KEYEVENTF_KEYUP,
-    VK_RETURN,
-    VK_BACK,
-)
+import pytest
+
+from funasr_input.input import FocusGuard, TextInjector, _is_wayland
 
 
-class TestBuildUnicodeInputs:
-    """构造 Unicode 字符的 INPUT 事件——回归测试，覆盖历史 bug。"""
+# ---- 辅助 ----
 
-    def test_scan_code_lands_in_wscan_not_extrainfo(self):
-        inj = TextInjector()
-        down, up = inj._build_unicode_inputs("a")
-
-        assert down.type == INPUT_KEYBOARD
-        # 关键：码点必须在 wScan，而不是 wVk / dwExtraInfo
-        assert down.ki.wVk == 0
-        assert down.ki.wScan == ord("a")
-        assert down.ki.dwFlags == KEYEVENTF_UNICODE
-
-        assert up.ki.wScan == ord("a")
-        assert up.ki.dwFlags == KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-
-    def test_chinese_char(self):
-        inj = TextInjector()
-        down, up = inj._build_unicode_inputs("中")
-        assert down.ki.wScan == ord("中") == 0x4E2D
-        assert up.ki.wScan == ord("中")
+def _make_completed(returncode: int = 0, stdout=b"") -> MagicMock:
+    m = MagicMock()
+    m.returncode = returncode
+    m.stdout = stdout
+    return m
 
 
-class TestBuildVkInputs:
-    """构造虚拟键（回车/退格）的 INPUT 事件。"""
+# ---- _is_wayland ----
 
-    def test_vk_in_wvk(self):
-        inj = TextInjector()
-        down, up = inj._build_vk_inputs(VK_RETURN)
-        assert down.ki.wVk == VK_RETURN
-        assert down.ki.dwFlags == 0
-        assert up.ki.wVk == VK_RETURN
-        assert up.ki.dwFlags == KEYEVENTF_KEYUP
+class TestIsWayland:
+    def test_wayland_when_env_set(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        assert _is_wayland() is True
+
+    def test_x11_when_env_absent(self, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        assert _is_wayland() is False
 
 
-class TestTextInjector:
-    def _patch_user32(self, inj):
-        fake = MagicMock()
-        inj._get_user32 = lambda: fake  # type: ignore[method-assign]
-        return fake
+# ---- FocusGuard ----
+
+class TestFocusGuardX11:
+    @pytest.fixture(autouse=True)
+    def force_x11(self, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    def test_save_calls_xdotool(self):
+        guard = FocusGuard()
+        # text=True → subprocess returns str stdout
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed(stdout="12345\n")) as mock_run:
+            guard.save()
+        mock_run.assert_called_once()
+        assert "xdotool" in mock_run.call_args.args[0]
+        assert guard._window_id == "12345"
+
+    def test_restore_calls_xdotool(self):
+        guard = FocusGuard()
+        guard._window_id = "99999"
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed()) as mock_run:
+            guard.restore()
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args.args[0]
+        assert "xdotool" in cmd and "windowfocus" in cmd
+
+    def test_restore_skips_when_no_window(self):
+        guard = FocusGuard()
+        with patch("funasr_input.input.subprocess.run") as mock_run:
+            guard.restore()
+        mock_run.assert_not_called()
+
+
+class TestFocusGuardWayland:
+    @pytest.fixture(autouse=True)
+    def force_wayland(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+
+    def test_save_is_noop(self):
+        guard = FocusGuard()
+        with patch("funasr_input.input.subprocess.run") as mock_run:
+            guard.save()
+        mock_run.assert_not_called()
+
+    def test_restore_is_noop(self):
+        guard = FocusGuard()
+        guard._window_id = "99999"
+        with patch("funasr_input.input.subprocess.run") as mock_run:
+            guard.restore()
+        mock_run.assert_not_called()
+
+
+# ---- TextInjector ----
+
+class TestTextInjectorX11:
+    @pytest.fixture(autouse=True)
+    def force_x11(self, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
     def test_write_empty_sends_nothing(self):
         inj = TextInjector()
-        fake = self._patch_user32(inj)
-        inj.write("")
-        fake.SendInput.assert_not_called()
+        with patch("funasr_input.input.subprocess.run") as mock_run:
+            inj.write("")
+        mock_run.assert_not_called()
 
-    def test_write_calls_sendinput_per_char(self):
-        inj = TextInjector(char_delay=0.0)
-        fake = self._patch_user32(inj)
-        inj.write("ab")
-        # 每个字符一次 SendInput 调用，每次提交 2 个事件（按下+释放）
-        assert fake.SendInput.call_count == 2
-        n_inputs = fake.SendInput.call_args_list[0].args[0]
-        assert n_inputs == 2
-
-    def test_press_enter(self):
+    def test_write_sets_clipboard_and_pastes(self):
         inj = TextInjector()
-        fake = self._patch_user32(inj)
-        inj.press_enter()
-        assert fake.SendInput.call_count == 1
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            # xclip -o 返回旧内容
+            if "-o" in cmd:
+                return _make_completed(stdout=b"old")
+            return _make_completed()
 
-    def test_press_backspace(self):
+        with patch("funasr_input.input.subprocess.run", side_effect=fake_run):
+            inj.write("你好")
+
+        # 顺序：get_clipboard → set_text → paste → restore_clipboard
+        assert any("xclip" in " ".join(c) and "-o" in c for c in calls), "应先读取剪贴板"
+        set_calls = [c for c in calls if "xclip" in " ".join(c) and "-o" not in c]
+        assert len(set_calls) >= 1, "应至少调用一次 xclip 写入"
+        paste_calls = [c for c in calls if "xdotool" in " ".join(c) and "ctrl+v" in " ".join(c)]
+        assert len(paste_calls) == 1, "应调用一次 xdotool 粘贴"
+
+    def test_write_with_no_old_clipboard(self):
         inj = TextInjector()
-        fake = self._patch_user32(inj)
-        inj.press_backspace(3)
-        assert fake.SendInput.call_count == 3
+        def fake_run(cmd, **kwargs):
+            if "-o" in cmd:
+                return _make_completed(returncode=1, stdout=b"")
+            return _make_completed()
 
-    def test_char_delay(self):
-        inj = TextInjector(char_delay=0.05)
-        self._patch_user32(inj)
-        t0 = time.time()
-        inj.write("xy")
-        elapsed = time.time() - t0
-        # 2 个字符，每个延迟 0.05s，至少应该有 ~0.1s
-        assert elapsed >= 0.09
+        with patch("funasr_input.input.subprocess.run", side_effect=fake_run):
+            inj.write("test")  # 不应抛出异常
+
+    def test_press_enter_uses_xdotool(self):
+        inj = TextInjector()
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed()) as mock_run:
+            inj.press_enter()
+        cmd = mock_run.call_args.args[0]
+        assert "xdotool" in cmd and "Return" in cmd
+
+    def test_press_backspace_calls_correct_times(self):
+        inj = TextInjector()
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed()) as mock_run:
+            inj.press_backspace(3)
+        assert mock_run.call_count == 3
+
+
+class TestTextInjectorWayland:
+    @pytest.fixture(autouse=True)
+    def force_wayland(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+
+    def test_write_uses_wl_copy(self):
+        inj = TextInjector()
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _make_completed()
+
+        with patch("funasr_input.input.subprocess.run", side_effect=fake_run):
+            inj.write("你好")
+
+        set_calls = [c for c in calls if "wl-copy" in " ".join(c)]
+        assert len(set_calls) >= 1
+
+    def test_press_enter_uses_wtype(self):
+        inj = TextInjector()
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed()) as mock_run:
+            inj.press_enter()
+        cmd = mock_run.call_args.args[0]
+        assert "wtype" in cmd
+
+    def test_press_backspace_uses_wtype(self):
+        inj = TextInjector()
+        with patch("funasr_input.input.subprocess.run", return_value=_make_completed()) as mock_run:
+            inj.press_backspace(2)
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[0].args[0]
+        assert "wtype" in cmd
