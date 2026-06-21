@@ -3,8 +3,8 @@
 润色与注入异步执行：识别完成后立即释放 _busy 锁，允许新一轮录音；
 润色+注入由 _PolishQueue 保序后台执行。
 
-Linux 热键说明：keyboard 库在 Linux 下读取 /dev/input 设备，需要 root 权限
-或将当前用户加入 input 组（sudo usermod -aG input $USER，重新登录后生效）。
+Linux 热键说明：使用 pynput 注册全局热键。X11 下走 Xlib、Wayland 下走
+libei/portal，普通用户即可运行，无需 root，也不依赖 /dev/input 访问权限。
 """
 
 from __future__ import annotations
@@ -41,11 +41,13 @@ class _PolishQueue:
         *,
         polisher: Optional[Polisher],
         injector: TextInjector,
+        focus_guard: Optional["FocusGuard"] = None,
         on_polish_start: Optional[Callable[[str], None]] = None,
         on_polish_done: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._polisher = polisher
         self._injector = injector
+        self._focus_guard = focus_guard
         self._on_polish_start = on_polish_start
         self._on_polish_done = on_polish_done
         self._seq = 0
@@ -108,6 +110,10 @@ class _PolishQueue:
                 text = self._polisher.polish(text)
 
             logger.info("✅ [polish-queue] 注入 #%d: %r", seq, text)
+            # 注入前把焦点恢复到录音开始时的目标窗口，避免录音/润色期间
+            # 焦点漂移（如切到预览窗或其它应用）导致文字粘到错误的地方。
+            if self._focus_guard is not None:
+                self._focus_guard.restore()
             self._injector.write(text)
 
             if self._on_polish_done:
@@ -184,12 +190,14 @@ class VoiceIME:
         self._preview: Optional[PreviewWindow] = None
         self._quit_event = threading.Event()
         self._hk_stop = threading.Event()
+        self._hotkey_listener = None  # type: ignore[var-annotated]
         self._polish_status: Optional[str] = None
         self._record_status: Optional[str] = None
         self._focus_guard = FocusGuard()
         self._polish_queue = _PolishQueue(
             polisher=self._polisher,
             injector=self._injector,
+            focus_guard=self._focus_guard,
             on_polish_start=self._on_polish_start,
             on_polish_done=self._on_polish_done,
         )
@@ -197,13 +205,12 @@ class VoiceIME:
     def start(self) -> None:
         """启动：立即显示悬浮窗+注册热键，后台加载模型。"""
         try:
-            import keyboard
+            from pynput import keyboard as pynput_keyboard
         except ImportError as exc:
             raise RuntimeError(
-            "请先安装 keyboard: pip install keyboard\n"
-            "Linux 下还需要 root 权限或将用户加入 input 组：\n"
-            "  sudo usermod -aG input $USER  （重新登录后生效）"
-        ) from exc
+                "请先安装 pynput: pip install pynput\n"
+                "Linux/X11 下以普通用户即可运行全局热键，无需 root。"
+            ) from exc
 
         self._running = True
         log_handler: Optional[PreviewLogHandler] = None
@@ -220,7 +227,7 @@ class VoiceIME:
 
         logger.info("正在初始化...")
 
-        self._register_hotkeys(keyboard)
+        self._register_hotkeys(pynput_keyboard)
         logger.info("热键已注册: %s / %s", self._hotkey, self._quit_hotkey)
 
         def _load_model() -> None:
@@ -261,17 +268,53 @@ class VoiceIME:
                 pass
             self.stop()
 
+    @staticmethod
+    def _to_pynput_hotkey(hotkey: str) -> str:
+        """把 "ctrl+alt+r" 形式转成 pynput 的 "<ctrl>+<alt>+r" 形式。"""
+        import re
+
+        mods = {
+            "ctrl": "ctrl", "control": "ctrl",
+            "alt": "alt", "option": "alt",
+            "shift": "shift",
+            "cmd": "cmd", "super": "cmd", "win": "cmd", "meta": "cmd",
+        }
+        # 需要写成 <name> 的具名键（修饰键、功能键、以及常见特殊键）。
+        named = {
+            "esc": "esc", "escape": "esc", "space": "space", "tab": "tab",
+            "enter": "enter", "return": "enter", "backspace": "backspace",
+            "delete": "delete", "insert": "insert", "home": "home", "end": "end",
+            "up": "up", "down": "down", "left": "left", "right": "right",
+            "page_up": "page_up", "pageup": "page_up",
+            "page_down": "page_down", "pagedown": "page_down",
+        }
+        parts = []
+        for tok in hotkey.replace(" ", "").split("+"):
+            if not tok:
+                continue
+            t = tok.lower()
+            if t in mods:
+                parts.append(f"<{mods[t]}>")
+            elif t in named:
+                parts.append(f"<{named[t]}>")
+            elif re.fullmatch(r"f\d{1,2}", t):  # 功能键 f1..f20
+                parts.append(f"<{t}>")
+            else:
+                parts.append(t)
+        return "+".join(parts)
+
     def _register_hotkeys(self, keyboard) -> None:  # type: ignore[no-untyped-def]
-        """注册录音热键与退出热键。"""
+        """注册录音热键与退出热键（pynput，普通用户即可，无需 root）。"""
         try:
-            keyboard.add_hotkey(self._hotkey, self._on_hotkey)
-            keyboard.add_hotkey(self._quit_hotkey, self._on_quit)
+            self._hotkey_listener = keyboard.GlobalHotKeys({
+                self._to_pynput_hotkey(self._hotkey): self._on_hotkey,
+                self._to_pynput_hotkey(self._quit_hotkey): self._on_quit,
+            })
+            self._hotkey_listener.start()
         except Exception as exc:
             raise RuntimeError(
                 f"热键注册失败：{exc}\n"
-                "Linux 下需要 root 权限或加入 input 组：\n"
-                "  sudo usermod -aG input $USER  （重新登录后生效）\n"
-                "或直接以 sudo 运行。"
+                "请确认已安装 pynput，且在图形会话（X11/Wayland）中运行。"
             ) from exc
 
     def _on_quit(self) -> None:
@@ -285,6 +328,12 @@ class VoiceIME:
         """停止。"""
         self._running = False
         self._hk_stop.set()
+        if self._hotkey_listener is not None:
+            try:
+                self._hotkey_listener.stop()
+            except Exception:
+                pass
+            self._hotkey_listener = None
         self._polish_queue.stop()
         if self._preview is not None:
             try:
@@ -309,8 +358,9 @@ class VoiceIME:
 
     def _run_pipeline(self) -> None:
         with self._busy:
+            # 录音开始时记下当前焦点窗口（通常是你正在打字的应用），
+            # 注入时再恢复到它（见 _PolishQueue._run）。
             self._focus_guard.save()
-            self._focus_guard.restore()
             logger.info("pipeline 开始 (live_preview=%s)", self._live_preview)
             self._set_record("🎤 正在录音...")
             live: Optional[LiveTranscriber] = None

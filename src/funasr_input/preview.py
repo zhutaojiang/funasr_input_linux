@@ -52,6 +52,8 @@ class PreviewWindow:
         )
         self._label.pack()
         self._bind_drag()
+        # 多显示器下要相对单个显示器定位，否则会落到整块虚拟桌面的正中/边缘外。
+        self._mon = self._detect_target_monitor()
         self._position_bottom_center()
 
     def _bind_drag(self) -> None:
@@ -79,16 +81,56 @@ class PreviewWindow:
     def _on_drag_end(self, _event) -> None:
         self._drag_offset = None
 
+    def _detect_target_monitor(self) -> tuple[int, int, int, int]:
+        """返回定位用的显示器几何 (x, y, w, h)，设备像素。
+
+        优先主显示器（xrandr 标记 primary），否则取第一个有几何的已连接显示器，
+        最后回退到整块虚拟桌面。多显示器下避免窗口落到桌面正中/边缘外。
+        """
+        import re
+        import subprocess
+
+        try:
+            out = subprocess.run(
+                ["xrandr", "--query"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout
+            geom_re = re.compile(r"\b(\d+)x(\d+)\+(\d+)\+(\d+)\b")
+            primary = None
+            first = None
+            for line in out.splitlines():
+                if " connected" not in line:
+                    continue
+                m = geom_re.search(line)
+                if not m:
+                    continue
+                w, h, x, y = (int(v) for v in m.groups())
+                geom = (x, y, w, h)
+                if first is None:
+                    first = geom
+                if " connected primary" in line:
+                    primary = geom
+                    break
+            chosen = primary or first
+            if chosen is not None:
+                return chosen
+        except Exception:
+            pass
+        return (0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight())
+
     def _position_bottom_center(self) -> None:
         if self._user_moved:
             return
         self._root.update_idletasks()
-        sw = self._root.winfo_screenwidth()
-        sh = self._root.winfo_screenheight()
-        w = self._root.winfo_width()
-        h = self._root.winfo_height()
-        x = (sw - w) // 2
-        y = sh - h - 80
+        mx, my, mw, mh = self._mon
+        # reqwidth/reqheight 来自内容请求尺寸，在窗口尚未映射时也可靠
+        # （winfo_width/height 此时常返回 1）。
+        w = self._root.winfo_reqwidth()
+        h = self._root.winfo_reqheight()
+        x = mx + (mw - w) // 2
+        y = my + mh - h - 80
         self._root.geometry(f"+{x}+{y}")
 
     def append_log(self, line: str) -> None:

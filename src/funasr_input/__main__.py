@@ -7,6 +7,16 @@ import argparse
 from funasr_input.ime import VoiceIME
 
 
+def _default_device() -> str:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="funasr_input 语音输入法")
     p.add_argument(
@@ -16,7 +26,7 @@ def main() -> None:
     )
     p.add_argument("--model-name", help="ASR 模型名 (覆盖 preset)")
     p.add_argument("--vad-model", help="VAD 模型名 (覆盖 preset)")
-    p.add_argument("--device", default="cpu", help="推理设备 (cpu/cuda)")
+    p.add_argument("--device", default=_default_device(), help="推理设备 (cpu/cuda)")
     p.add_argument("--hotkey", default="ctrl+alt+r", help="录音热键")
     p.add_argument("--quit-hotkey", default="ctrl+alt+q", help="退出热键")
     p.add_argument("--silence-threshold", type=float, default=0.015, help="静音阈值")

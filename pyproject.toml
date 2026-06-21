@@ -14,7 +14,7 @@ keywords = ["asr", "speech-to-text", "voice-input", "linux", "ime"]
 dependencies = [
     "sounddevice>=0.4.6",
     "numpy>=1.24",
-    "keyboard>=0.13.5",
+    "pynput>=1.7.6",
     "soundfile>=0.12",
     "funasr>=1.3.9",
     # torch 2.6+ 会让 funasr 1.3.9 加载模型时 deepcopy 触发原生崩溃；锁在 2.5.x。
