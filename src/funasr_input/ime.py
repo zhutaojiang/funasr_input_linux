@@ -249,16 +249,23 @@ class VoiceIME:
             if log_handler:
                 logger.removeHandler(log_handler)
 
+        def _warmup_llm() -> None:
+            if self._polisher is not None and hasattr(self._polisher, "warmup"):
+                self._polisher.warmup()  # type: ignore[union-attr]
+
         # Ctrl+C 退出：tkinter mainloop 是 C 层循环，KeyboardInterrupt 插不进去，
         # 需要显式注册 SIGINT handler 通过 after() 调度 quit。
         signal.signal(signal.SIGINT, lambda s, f: self._on_quit())
 
         if self._live_preview:
             threading.Thread(target=_load_model, daemon=True, name="model-load").start()
+            threading.Thread(target=_warmup_llm, daemon=True, name="llm-warmup").start()
             self._preview.run()
             self.stop()
         else:
             _load_model()
+            if self._polisher is not None and hasattr(self._polisher, "warmup"):
+                threading.Thread(target=_warmup_llm, daemon=True, name="llm-warmup").start()
             self._notify(
                 f"语音输入法已启动，快捷键: {self._hotkey}，退出: {self._quit_hotkey}"
             )

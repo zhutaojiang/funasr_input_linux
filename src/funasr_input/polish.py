@@ -68,7 +68,7 @@ class StepFunPolisher:
         api_key: Optional[str] = None,
         model: str = "step-1-flash",
         base_url: str = "https://api.stepfun.com/v1",
-        timeout: float = 10.0,
+        timeout: float = 8.0,
         prompt: str = DEFAULT_PROMPT,
         post: Optional[Callable[[str, bytes, dict], bytes]] = None,
     ) -> None:
@@ -98,6 +98,17 @@ class StepFunPolisher:
             logger.exception("LLM 润色失败，回退原文")
             return text  # 任意失败 → 回退原文，不阻断输入
 
+    def warmup(self) -> None:
+        """预热模型：发一条极短请求触发模型加载，消除首次润色的延迟。"""
+        try:
+            logger.info("LLM 预热中：触发模型加载...")
+            t0 = time.time()
+            self.polish("hello")
+            dt = time.time() - t0
+            logger.info("LLM 预热完成：用时%.2fs", dt)
+        except Exception:
+            logger.exception("LLM 预热失败（不影响正常使用）")
+
     def _build_request(self, text: str) -> tuple[str, bytes, dict]:
         url = f"{self._base_url}/chat/completions"
         body = {
@@ -108,6 +119,7 @@ class StepFunPolisher:
             ],
             "temperature": 0.3,
             "stream": False,
+            "keep_alive": -1,
         }
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = {
@@ -143,4 +155,6 @@ def make_polisher_from_config(config: dict) -> StepFunPolisher:
         value = section.get(key)
         if value:
             kwargs[key] = value
+    if (t := section.get("timeout")) is not None:
+        kwargs["timeout"] = float(t)
     return StepFunPolisher(**kwargs)
