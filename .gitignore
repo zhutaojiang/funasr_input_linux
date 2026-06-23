@@ -218,4 +218,3 @@ __marimo__/
 .streamlit/secrets.toml
 
 # 本地配置（含密钥），不提交
-config.toml

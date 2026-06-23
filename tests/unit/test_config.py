@@ -25,10 +25,10 @@ def test_load_config_parses_toml(tmp_path):
     assert cfg["polish"]["model"] == "my-model"
 
 
-def test_make_polisher_reads_section(tmp_path):
+def test_make_polisher_reads_section(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k-xyz")
     cfg = {
         "polish": {
-            "api_key": "k-xyz",
             "base_url": "https://api.example.com/v1",
             "model": "my-model",
         }
@@ -43,7 +43,7 @@ def test_make_polisher_reads_section(tmp_path):
 
 
 def test_make_polisher_empty_config_uses_defaults(monkeypatch):
-    monkeypatch.delenv("STEPFUN_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     p = make_polisher_from_config({})
     url, _data, _headers = p._build_request("x")
     # 缺失字段回退到 StepFunPolisher 默认值

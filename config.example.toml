@@ -1,5 +1,7 @@
 # funasr_input 配置示例。
-# 复制为 config.toml 并填入你的值（config.toml 已被 .gitignore 忽略，不会提交）。
+# 密钥等敏感信息请放在 .env 文件中（格式参考 .env.example）。
+#
+# 复制为 config.toml 后按需修改。本地 Ollama 只需改 base_url 和 model。
 
 [asr]
 # 识别模型预设（后续会有配置对话框可视化切换）：
@@ -11,8 +13,7 @@
 preset = "nano"
 
 [polish]
-# StepFun（阶跃星辰）OpenAI 兼容接口
-api_key  = "在这里填你的 StepFun API key"
+# 使用云 API：在项目根 .env 里设置 LLM_API_KEY=你的key
 base_url = "https://api.stepfun.com/v1"
 model    = "step-1-flash"
 # 可选：自定义润色 prompt（不填则用内置默认：去语气词、调语序、错别字/标点、

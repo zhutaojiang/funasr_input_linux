@@ -72,7 +72,7 @@ class StepFunPolisher:
         prompt: str = DEFAULT_PROMPT,
         post: Optional[Callable[[str, bytes, dict], bytes]] = None,
     ) -> None:
-        self._api_key = api_key if api_key is not None else os.environ.get("STEPFUN_API_KEY", "")
+        self._api_key = api_key if api_key is not None else os.environ.get("LLM_API_KEY", "")
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
@@ -146,12 +146,13 @@ class StepFunPolisher:
 def make_polisher_from_config(config: dict) -> StepFunPolisher:
     """根据配置 dict 的 ``[polish]`` 段构造 StepFunPolisher。
 
-    缺失字段回退到 StepFunPolisher 的默认值（api_key 进一步回退到
-    环境变量 ``STEPFUN_API_KEY``）。
+    缺失字段回退到 StepFunPolisher 的默认值。
+    敏感信息（api_key）从环境变量 ``LLM_API_KEY`` 读取，
+    通过项目根 ``.env`` 文件注入。
     """
     section = config.get("polish", {}) or {}
     kwargs: dict = {}
-    for key in ("api_key", "base_url", "model", "prompt"):
+    for key in ("base_url", "model", "prompt"):
         value = section.get(key)
         if value:
             kwargs[key] = value

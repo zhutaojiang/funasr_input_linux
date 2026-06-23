@@ -169,7 +169,7 @@ model    = "step-1-flash"
 ```
 
 说明：
-- `api_key` 也可改用环境变量 `STEPFUN_API_KEY`；`base_url`/`model` 缺省时回退到内置默认值。
+- API key 通过项目根 `.env` 文件的 `LLM_API_KEY` 环境变量注入；`base_url`/`model` 缺省时回退到内置默认值。
 - 配置路径可用环境变量 `FUNASR_INPUT_CONFIG` 覆盖。
 - 任何网络/接口失败都会**自动回退到原始识别文本**，不会卡住输入。
 - 未配置 API key 时润色自动跳过，不影响使用。
