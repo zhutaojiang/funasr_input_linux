@@ -1,7 +1,8 @@
 """LLM 润色模块：把语音识别的粗文本送给 LLM 修正错别字与标点。
 
-默认实现 StepFunPolisher 走 StepFun（阶跃星辰）的 OpenAI 兼容接口，
-用 stdlib urllib 直接发请求，并显式绕过系统代理（避免被失效的 *_PROXY 拦截）。
+默认实现 OpenAICompatPolisher 走 OpenAI 兼容的 chat/completions 接口
+（Ollama、vLLM、StepFun、DeepSeek 等均可），用 stdlib urllib 直接发请求，
+并显式绕过系统代理（避免被失效的 *_PROXY 拦截）。
 """
 
 from __future__ import annotations
@@ -17,17 +18,23 @@ logger = logging.getLogger("funasr_input")
 
 
 DEFAULT_PROMPT = (
-    "你是语音输入的文本润色器。把下面这段语音识别的口语结果整理成通顺的书面文本。规则：\n"
-    "1. 删去无意义的语气词和口头禅，如 嗯、啊、呀、呃、哦、那个、就是说、然后那个 等；\n"
-    "2. 去掉口吃、重复和明显赘语；\n"
-    "3. 修正错别字，补全正确标点；\n"
-    "4. 在不改变原意、不新增信息的前提下，可适当调整语序和措辞，使表达更通顺自然；\n"
-    "5. 口语转书面：组合键中的「加」转成「+」并规范按键名（如 Control、Alt、Shift、Space），"
-    "数字和单位按常规书写；\n"
-    "6. 只输出整理后的文本本身，不要解释、不要加引号或任何前后缀。\n"
+    "你是语音输入的文本润色器。对语音识别的口语结果只做最小修改，不增不减不替换。\n"
+    "核心约束（不可违反）：\n"
+    "- 禁止添加任何原文中没有的字词（包括「你好」「请」「好的」等客套）\n"
+    "- 禁止同义词替换（如「做」不要改「进行」，「看」不要改「查看」）\n"
+    "- 禁止输出引号、解释、前后缀；只输出整理后的文本本身\n"
+    "允许的修改：\n"
+    "1. 删去无意义的语气词和口头禅（嗯、啊、呀、呃、哦、那个、就是说、然后那个）\n"
+    "2. 去掉口吃、重复和明显赘语\n"
+    "3. 修正错别字，补全正确标点\n"
+    "4. 组合键中的「加」转成「+」并规范按键名（如 Control、Alt、Shift、Space）；"
+    "数字和单位按常规书写\n"
+    "5. 英文专有名词、代码名、工具名保留原文（如 Claude Code 不要译为「云代码」）\n"
     "示例：\n"
-    "输入：嗯，试一下中文混输，按 control 加 alt 加 space 切换录音模式。\n"
-    "输出：试一下中文混输，按 Control+Alt+Space 切换录音模式。"
+    "输入：做一下测试。喂喂啊，你好你好。\n"
+    "输出：做一下测试。你好。\n"
+    "输入：嗯那个，按 control 加 alt 加 space 切换录音模式。\n"
+    "输出：按 Control+Alt+Space 切换录音模式。"
 )
 
 
@@ -59,8 +66,12 @@ class Polisher(Protocol):
         ...
 
 
-class StepFunPolisher:
-    """StepFun（OpenAI 兼容）润色实现。"""
+class OpenAICompatPolisher:
+    """OpenAI 兼容 chat/completions 接口的润色实现。
+
+    支持任何 OpenAI 兼容端点：Ollama (http://localhost:11434/v1)、
+    StepFun、DeepSeek、vLLM、SGLang、llama.cpp server 等。
+    """
 
     def __init__(
         self,
@@ -70,6 +81,7 @@ class StepFunPolisher:
         base_url: str = "https://api.stepfun.com/v1",
         timeout: float = 8.0,
         prompt: str = DEFAULT_PROMPT,
+        think: bool = False,
         post: Optional[Callable[[str, bytes, dict], bytes]] = None,
     ) -> None:
         self._api_key = api_key if api_key is not None else os.environ.get("LLM_API_KEY", "")
@@ -77,6 +89,7 @@ class StepFunPolisher:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._prompt = prompt
+        self._think = think
         self._post = post or self._http_post
 
     def polish(self, text: str) -> str:
@@ -119,6 +132,7 @@ class StepFunPolisher:
             ],
             "temperature": 0.3,
             "stream": False,
+            "think": self._think,
             "keep_alive": -1,
         }
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -143,10 +157,10 @@ class StepFunPolisher:
             return resp.read()
 
 
-def make_polisher_from_config(config: dict) -> StepFunPolisher:
-    """根据配置 dict 的 ``[polish]`` 段构造 StepFunPolisher。
+def make_polisher_from_config(config: dict) -> OpenAICompatPolisher:
+    """根据配置 dict 的 ``[polish]`` 段构造 OpenAICompatPolisher。
 
-    缺失字段回退到 StepFunPolisher 的默认值。
+    缺失字段回退到 OpenAICompatPolisher 的默认值。
     敏感信息（api_key）从环境变量 ``LLM_API_KEY`` 读取，
     通过项目根 ``.env`` 文件注入。
     """
@@ -158,4 +172,6 @@ def make_polisher_from_config(config: dict) -> StepFunPolisher:
             kwargs[key] = value
     if (t := section.get("timeout")) is not None:
         kwargs["timeout"] = float(t)
-    return StepFunPolisher(**kwargs)
+    if "think" in section:
+        kwargs["think"] = bool(section["think"])
+    return OpenAICompatPolisher(**kwargs)

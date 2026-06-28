@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from funasr_input.config import load_config
-from funasr_input.polish import make_polisher_from_config, StepFunPolisher
+from funasr_input.polish import make_polisher_from_config, OpenAICompatPolisher
 
 
 def test_load_config_missing_file_returns_empty(tmp_path):
@@ -34,7 +34,7 @@ def test_make_polisher_reads_section(monkeypatch):
         }
     }
     p = make_polisher_from_config(cfg)
-    assert isinstance(p, StepFunPolisher)
+    assert isinstance(p, OpenAICompatPolisher)
     url, _data, headers = p._build_request("x")
     assert url == "https://api.example.com/v1/chat/completions"
     assert headers["Authorization"] == "Bearer k-xyz"
@@ -46,7 +46,7 @@ def test_make_polisher_empty_config_uses_defaults(monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     p = make_polisher_from_config({})
     url, _data, _headers = p._build_request("x")
-    # 缺失字段回退到 StepFunPolisher 默认值
+    # 缺失字段回退到 OpenAICompatPolisher 默认值
     assert url == "https://api.stepfun.com/v1/chat/completions"
     body = __import__("json").loads(_data.decode("utf-8"))
     assert body["model"] == "step-1-flash"

@@ -65,7 +65,7 @@ def test_polish_enabled_without_polisher_builds_from_config(monkeypatch):
     import json
 
     import funasr_input.ime as ime_mod
-    from funasr_input.polish import StepFunPolisher
+    from funasr_input.polish import OpenAICompatPolisher
 
     monkeypatch.setattr(
         ime_mod, "load_config", lambda: {"polish": {"model": "cfg-model"}}
@@ -73,6 +73,6 @@ def test_polish_enabled_without_polisher_builds_from_config(monkeypatch):
     from funasr_input.ime import VoiceIME
 
     ime = VoiceIME(device="cpu", polish=True, on_status=lambda m: None)
-    assert isinstance(ime._polisher, StepFunPolisher)
+    assert isinstance(ime._polisher, OpenAICompatPolisher)
     _url, data, _headers = ime._polisher._build_request("x")
     assert json.loads(data.decode("utf-8"))["model"] == "cfg-model"

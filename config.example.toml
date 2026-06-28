@@ -13,12 +13,20 @@
 preset = "nano"
 
 [polish]
-# 使用云 API：在项目根 .env 里设置 LLM_API_KEY=你的key
+# 任意 OpenAI 兼容端点都行。下面是两种典型用法：
+#
+# ① 本地 Ollama（推荐：免费、隐私、可离线）
+# base_url = "http://localhost:11434/v1"
+# model    = "qwen3:4b"        # 或 qwen2.5:3b、hf.co/openbmb/MiniCPM5-1B-GGUF:Q4_K_M
+#
+# ② 云 API（key 通过项目根 .env 的 LLM_API_KEY 注入）
 base_url = "https://api.stepfun.com/v1"
 model    = "step-1-flash"
 # 可选：自定义润色 prompt（不填则用内置默认：去语气词、调语序、错别字/标点、
 # 组合键「加」转「+」等）。想改润色风格在这里覆盖即可。
 # prompt = "你是语音输入的文本润色器……"
+# 可选：是否启用 thinking（Qwen3 等推理模型专用）。润色场景**必须关**（默认 false）。
+# think  = false
 
 # 以下为运行选项，后续会接入配置对话框做动态调整；当前先在启动代码里传参，
 # 这里仅作记录/占位（暂未被读取）。

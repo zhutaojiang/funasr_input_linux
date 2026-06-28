@@ -155,22 +155,26 @@ python -m funasr_input --hotkey ctrl+alt+r --quit-hotkey ctrl+alt+q
 
 ### LLM 润色
 
-识别结果会先用 LLM 修正错别字/标点/语气词，再写入输入框。默认走 StepFun
-（阶跃星辰，国内直连并自动绕过系统代理），也支持任何 OpenAI 兼容接口（如 DeepSeek）。
+识别结果会先用 LLM 修正错别字/标点/语气词，再写入输入框。默认走 OpenAI 兼容接口
+（Ollama 本地或任何 OpenAI 兼容云端 API，如 StepFun、DeepSeek），也支持 vLLM/SGLang/llama.cpp server。
 
 **配置：** 复制 `config.example.toml` 为项目根的 `config.toml`，填入你的值
 （`config.toml` 已被 `.gitignore` 忽略，可安全存放 key）：
 
 ```toml
 [polish]
-api_key  = "你的 API key"
-base_url = "https://api.stepfun.com/v1"
-model    = "step-1-flash"
+# 本地 Ollama（推荐）
+base_url = "http://localhost:11434/v1"
+model    = "qwen3:4b"
+# 云 API 改用 base_url + model 对应服务，api_key 通过 .env 注入：
+# base_url = "https://api.stepfun.com/v1"
+# model    = "step-1-flash"
 ```
 
 说明：
 - API key 通过项目根 `.env` 文件的 `LLM_API_KEY` 环境变量注入；`base_url`/`model` 缺省时回退到内置默认值。
 - 配置路径可用环境变量 `FUNASR_INPUT_CONFIG` 覆盖。
+- 默认在请求体里加 `"think": false`，避免 Qwen3 等推理模型先吐一长串 `` 浪费 token+延迟。Qwen2.5 / 其他模型忽略此字段无副作用。
 - 任何网络/接口失败都会**自动回退到原始识别文本**，不会卡住输入。
 - 未配置 API key 时润色自动跳过，不影响使用。
 
@@ -193,7 +197,7 @@ src/funasr_input/
 ├── asr.py        # ASR 语音识别引擎
 ├── audio.py      # 音频采集 (AudioRecorder, AudioSegment)
 ├── input.py      # Windows 文本注入 (TextInjector, FocusGuard)
-├── polish.py     # LLM 润色 (StepFunPolisher)
+├── polish.py     # LLM 润色 (OpenAICompatPolisher)
 ├── live.py       # 准流式识别调度 (LiveTranscriber)
 ├── preview.py    # 悬浮预览窗 (PreviewWindow)
 ├── presets.py    # 识别模型预设

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import urllib.request
 
-from funasr_input.polish import _make_opener, StepFunPolisher, DEFAULT_PROMPT
+from funasr_input.polish import _make_opener, OpenAICompatPolisher, DEFAULT_PROMPT
 
 
 def test_make_opener_bypasses_system_proxy():
@@ -19,7 +19,7 @@ def test_make_opener_bypasses_system_proxy():
 
 
 def test_build_request_body_and_headers():
-    p = StepFunPolisher(api_key="k-123", model="step-1-flash")
+    p = OpenAICompatPolisher(api_key="k-123", model="step-1-flash")
     url, data, headers = p._build_request("识别原文")
 
     assert url.endswith("/chat/completions")
@@ -30,23 +30,30 @@ def test_build_request_body_and_headers():
     assert body["model"] == "step-1-flash"
     assert body["messages"][0] == {"role": "system", "content": DEFAULT_PROMPT}
     assert body["messages"][1] == {"role": "user", "content": "识别原文"}
+    assert body["think"] is False  # 润色不需要 thinking，默认关闭
+
+
+def test_think_param_overrides_default():
+    p = OpenAICompatPolisher(api_key="k", model="m", think=True)
+    _url, data, _headers = p._build_request("x")
+    assert json.loads(data.decode("utf-8"))["think"] is True
 
 
 def test_parse_response_extracts_and_strips():
     raw = json.dumps(
         {"choices": [{"message": {"content": "  润色后的文本。 "}}]}
     ).encode("utf-8")
-    assert StepFunPolisher._parse_response(raw) == "润色后的文本。"
+    assert OpenAICompatPolisher._parse_response(raw) == "润色后的文本。"
 
 
 def test_parse_response_empty_choices():
     raw = json.dumps({"choices": []}).encode("utf-8")
-    assert StepFunPolisher._parse_response(raw) == ""
+    assert OpenAICompatPolisher._parse_response(raw) == ""
 
 
 def test_polish_empty_text_skips_request():
     calls = []
-    p = StepFunPolisher(api_key="k", post=lambda u, d, h: calls.append(1) or b"{}")
+    p = OpenAICompatPolisher(api_key="k", post=lambda u, d, h: calls.append(1) or b"{}")
     assert p.polish("") == ""
     assert calls == []  # 空文本不发请求
 
@@ -57,7 +64,7 @@ def test_polish_returns_parsed_result():
             {"choices": [{"message": {"content": "净本"}}]}
         ).encode("utf-8")
 
-    p = StepFunPolisher(api_key="k", post=fake_post)
+    p = OpenAICompatPolisher(api_key="k", post=fake_post)
     assert p.polish("毛本") == "净本"
 
 
@@ -65,10 +72,10 @@ def test_polish_degrades_to_original_on_error():
     def boom(url, data, headers):
         raise TimeoutError("proxy/network down")
 
-    p = StepFunPolisher(api_key="k", post=boom)
+    p = OpenAICompatPolisher(api_key="k", post=boom)
     assert p.polish("原始文本") == "原始文本"  # 失败回退原文，不抛异常
 
 
 def test_polish_degrades_when_result_empty():
-    p = StepFunPolisher(api_key="k", post=lambda u, d, h: b'{"choices": []}')
+    p = OpenAICompatPolisher(api_key="k", post=lambda u, d, h: b'{"choices": []}')
     assert p.polish("原始文本") == "原始文本"
